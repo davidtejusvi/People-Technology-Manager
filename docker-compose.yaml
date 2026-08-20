@@ -1,0 +1,55 @@
+services:
+
+  mysql:
+    image: mysql:8.0
+    container_name: people-mysql
+
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: peopledb
+
+    ports:
+      - "3306:3306"
+
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+
+  backend:
+    build:
+      context: ./backend
+
+    container_name: people-backend
+
+    environment:
+      PORT: 5001
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: rootpassword
+      DB_NAME: peopledb
+
+    ports:
+      - "5000:5000"
+
+    depends_on:
+      - mysql
+
+
+  frontend:
+    build:
+      context: ./frontend
+
+    container_name: people-frontend
+
+    ports:
+      - "3000:80"
+
+    depends_on:
+      - backend
+
+
+volumes:
+
+  mysql-data:

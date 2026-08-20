@@ -45,11 +45,11 @@ const createPerson = async (req, res) => {
         const {
             name,
             email,
-            technologies,
+            technology,
             experience
         } = req.body;
 
-        if (!name || !email || !technologies || experience === undefined) {
+        if (!name || !email || !technology || experience === undefined) {
             return res.status(400).json({
                 message: "All fields are required"
             });
@@ -57,12 +57,12 @@ const createPerson = async (req, res) => {
 
         const [result] = await pool.query(
             `INSERT INTO people
-       (name, email, technologies, experience)
+       (name, email, technology, experience)
        VALUES (?, ?, ?, ?)`,
             [
                 name,
                 email,
-                technologies,
+                technology,
                 experience
             ]
         );
@@ -95,7 +95,7 @@ const updatePerson = async (req, res) => {
         const {
             name,
             email,
-            technologies,
+            technology,
             experience
         } = req.body;
 
@@ -103,13 +103,13 @@ const updatePerson = async (req, res) => {
             `UPDATE people
        SET name = ?,
            email = ?,
-           technologies = ?,
+           technology = ?,
            experience = ?
        WHERE id = ?`,
             [
                 name,
                 email,
-                technologies,
+                technology,
                 experience,
                 req.params.id
             ]
