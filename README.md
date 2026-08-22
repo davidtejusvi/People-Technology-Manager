@@ -1,559 +1,812 @@
-# People-Technology-Manager
-# People Technology Manager — AWS EKS Deployment
+People Technology Manager — Clean Architecture Explanation
 
-A full-stack **People Technology Manager** application deployed on **Amazon EKS** using Kubernetes.
+This project is a full-stack application deployed on Amazon EKS using Kubernetes.
 
-The application consists of:
+The application has three main parts:
 
-- React frontend
-- Node.js backend
-- MySQL database
-- Kubernetes Deployments
-- Kubernetes Services
-- Kubernetes Secret
-- Kubernetes ConfigMap
-- PersistentVolumeClaim
-- AWS EBS storage
-- AWS EBS CSI Driver
-- Amazon EKS managed node group
-- Nginx reverse proxy
+React → frontend
+Node.js → backend/API
+MySQL → database
 
----
+Kubernetes manages all three, while AWS EBS provides persistent storage for MySQL.
 
-## 1. Application Architecture
+1. Overall Architecture
 
-```text
+The easiest way to understand the project is:
+
                          Internet
                             |
                             |
-                 EC2 Public IP :31992
+                    EC2 Node Public IP
+                         :31992
                             |
                             v
-                +-----------------------+
-                |   people-frontend    |
-                |       Nginx          |
-                |      NodePort        |
-                |        :80           |
-                +----------+------------+
-                           |
-                           | /api/*
-                           v
-                +-----------------------+
-                |   people-backend     |
-                |      ClusterIP       |
-                |       :5001          |
-                +----------+------------+
-                           |
-                           | MySQL
-                           v
-                +-----------------------+
-                |        MySQL          |
-                |      ClusterIP       |
-                |       :3306          |
-                +----------+------------+
-                           |
-                           v
-                    +-------------+
-                    |  mysql-pvc  |
-                    |     5Gi     |
-                    +------+------+
-                           |
-                           v
+                  +-------------------+
+                  |   Frontend        |
+                  | React + Nginx     |
+                  | NodePort :80      |
+                  +---------+---------+
+                            |
+                         /api/*
+                            |
+                            v
+                  +-------------------+
+                  |     Backend       |
+                  | Node.js           |
+                  | ClusterIP :5001   |
+                  +---------+---------+
+                            |
+                            v
+                  +-------------------+
+                  |      MySQL        |
+                  | ClusterIP :3306   |
+                  +---------+---------+
+                            |
+                            v
+                  +-------------------+
+                  |    mysql-pvc      |
+                  |       5Gi         |
+                  +---------+---------+
+                            |
+                            v
                        AWS EBS
+
+This architecture is described in the project documentation.
+
+In simple words
+
+A user opens:
+
+http://<NODE-PUBLIC-IP>:31992
+
+The request reaches the frontend NodePort.
+
+Nginx serves the React application.
+
+When React needs data, it calls:
+
+/api/people
+
+Nginx forwards that request to:
+
+people-backend:5001
+
+The Node.js backend talks to:
+
+mysql:3306
+
+MySQL stores its data on:
+
+AWS EBS
 2. AWS Infrastructure
-The application was deployed to:
-AWS Region: ap-south-1
-EKS Cluster: ekswithdavid
 
-Managed node group:
-Node Group: mycustomng
-Instance Type: c7i-flex.large
-Desired: 2
-Minimum: 2
-Maximum: 2
+The application was deployed on:
 
-The cluster eventually had two healthy nodes:
-ip-192-168-2-188.ap-south-1.compute.internal
-ip-192-168-47-32.ap-south-1.compute.internal
+AWS
+ └── ap-south-1
+      └── EKS
+           └── ekswithdavid
+                └── Managed Node Group
+                     ├── Node 1
+                     └── Node 2
 
-Both nodes reached:
-STATUS: Ready
+The EKS cluster was:
 
-3. Create/Configure EKS Access
-The cluster was discovered using:
+Cluster: ekswithdavid
+Region:  ap-south-1
+
+The managed node group was:
+
+Name:     mycustomng
+Instance: c7i-flex.large
+Desired:  2
+Minimum:  2
+Maximum:  2
+
+Both nodes eventually became:
+
+Ready
+
+according to the project deployment record.
+
+3. How You Connected to EKS
+
+First, you checked whether the cluster existed:
+
 aws eks list-clusters --region ap-south-1
 
-The cluster returned:
+It returned:
+
 ekswithdavid
 
-Kubeconfig was configured using:
+Then you configured your local machine to communicate with the cluster:
+
 aws eks update-kubeconfig \
   --region ap-south-1 \
   --name ekswithdavid
 
-The Kubernetes context was verified:
+This updates your kubeconfig so that:
+
+kubectl
+   |
+   v
+Amazon EKS
+
+can communicate with the cluster.
+
+You verified the context using:
+
 kubectl config current-context
 
-Result:
-arn:aws:eks:ap-south-1:919006484182:cluster/ekswithdavid
+The context pointed to the EKS cluster.
 
-4. Initial Node Problem
+4. First Problem — Nodes Were Not Available
+
 Initially:
+
 kubectl get nodes
 
 returned:
+
 No resources found
 
-The node group was checked using:
+Why?
+
+Because the managed node group was still:
+
+CREATING
+
+You checked it with:
+
 eksctl get nodegroup \
   --cluster ekswithdavid \
   --region ap-south-1
 
-Initially the node group was:
-CREATING
+After provisioning completed, the node group became:
 
-After the node group finished provisioning:
 ACTIVE
 
 Then:
+
 kubectl get nodes
 
-returned two nodes:
-NAME                                           STATUS
-ip-192-168-2-188.ap-south-1.compute.internal   Ready
-ip-192-168-47-32.ap-south-1.compute.internal   Ready
+showed two nodes:
+
+Node 1    Ready
+Node 2    Ready
+Important lesson
+
+An EKS control plane can exist while worker nodes are still provisioning.
+
+So:
+
+EKS Cluster exists
+        ≠
+Worker nodes are ready
 
 5. Kubernetes Namespace
-A dedicated namespace was created:
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: people-app
 
-Applied with:
+Instead of deploying everything into default, you created:
+
+people-app
+
+namespace.
+
+Conceptually:
+
+EKS Cluster
+   |
+   +── kube-system
+   |
+   +── people-app
+          |
+          +── Frontend
+          +── Backend
+          +── MySQL
+          +── Secret
+          +── ConfigMap
+          +── PVC
+
+This gives your application its own logical Kubernetes environment.
+
+The namespace was created with:
+
 kubectl apply -f namespace.yaml
 
-Verified with:
-kubectl get namespaces
-
 6. Kubernetes System Components
-The following system components were running:
+
+The EKS cluster had important Kubernetes components such as:
+
 aws-node
 coredns
 kube-proxy
 metrics-server
 
-Verified with:
+These were running in:
+
+kube-system
+
+You checked them using:
+
 kubectl get pods -A
 
-7. MySQL Configuration
-MySQL was deployed inside the people-app namespace.
-Database configuration:
+7. MySQL Database
+
+Your application uses:
 
 Database: peopledb
-Username: root
+User:     root
 Port:     3306
 
-The MySQL Kubernetes Service was:
-mysql:3306
+Inside Kubernetes, the backend does not connect to an IP address.
 
-The backend uses:
+It uses the Kubernetes Service name:
+
+mysql
+
+So the backend configuration is:
+
 DB_HOST=mysql
 DB_PORT=3306
 DB_USER=root
 DB_NAME=peopledb
 
+Therefore:
+
+Node.js Backend
+       |
+       | mysql:3306
+       v
+     MySQL
+
+This is Kubernetes Service Discovery.
+
 8. Kubernetes Secret
-Database credentials were stored in a Kubernetes Secret.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: mysql-secret
-  namespace: people-app
-stringData:
-  DB_PASSWORD: rootpassword
-  MYSQL_ROOT_PASSWORD: rootpassword
-type: Opaque
 
-The backend gets the database password from:
-valueFrom:
-  secretKeyRef:
-    name: mysql-secret
-    key: DB_PASSWORD
+The database password should not be directly written into the Deployment.
 
-MySQL gets the root password from:
-valueFrom:
-  secretKeyRef:
-    name: mysql-secret
-    key: MYSQL_ROOT_PASSWORD
+Instead, you created:
 
-9. MySQL Initialization
-The SQL initialization file was located at:
+mysql-secret
+
+The Secret contains:
+
+DB_PASSWORD
+MYSQL_ROOT_PASSWORD
+
+The backend obtains:
+
+DB_PASSWORD
+
+from the Secret.
+
+MySQL obtains:
+
+MYSQL_ROOT_PASSWORD
+
+from the same Secret.
+
+Why Secret?
+
+Because sensitive information such as:
+
+passwords
+API keys
+tokens
+credentials
+
+should be separated from normal application configuration.
+
+9. ConfigMap — MySQL Initialization
+
+You had an SQL file:
+
 database/init.sql
 
-A ConfigMap was created:
+It creates/initializes the database structure.
+
+You converted it into a ConfigMap:
+
 kubectl create configmap mysql-init \
   --from-file=init.sql=../database/init.sql \
   -n people-app
 
-The ConfigMap was mounted into:
+It was mounted into:
+
 /docker-entrypoint-initdb.d/init.sql
 
-This allowed MySQL to initialize the database automatically.
-10. Persistent Storage
-The MySQL PVC requested:
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: mysql-pvc
-  namespace: people-app
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
+MySQL automatically processes initialization SQL placed there when the database is initialized.
 
-The EKS cluster had the gp2 StorageClass:
-NAME   PROVISIONER             VOLUMEBINDINGMODE
-gp2    kubernetes.io/aws-ebs   WaitForFirstConsumer
+So:
 
+init.sql
+   |
+   v
+ConfigMap
+   |
+   v
+MySQL Pod
+   |
+   v
+/docker-entrypoint-initdb.d/init.sql
+   |
+   v
+Database initialized
+10. Persistent Storage — Very Important
+
+This is one of the most important parts of the project.
+
+You created:
+
+mysql-pvc
+
+with:
+
+Storage: 5Gi
+Access Mode: ReadWriteOnce
+
+The PVC requests storage from Kubernetes.
+
+The flow is:
+
+MySQL
+  |
+  v
+PVC
+  |
+  v
+StorageClass
+  |
+  v
+EBS CSI Driver
+  |
+  v
+AWS EBS
 11. PVC Problem
+
 Initially:
+
 kubectl get pvc -n people-app
 
-returned:
-NAME        STATUS
+showed:
+
 mysql-pvc   Pending
 
-The PVC events showed:
-ExternalProvisioning
+This means:
 
-Waiting for a volume to be created by the external provisioner
-'ebs.csi.aws.com'
+Kubernetes requested storage, but Kubernetes could not create/provide the volume.
 
-We checked:
+You checked the events and found:
+
+Waiting for a volume to be created by
+external provisioner 'ebs.csi.aws.com'
+
+Then you checked:
+
 kubectl get pods -n kube-system | grep -i ebs
 
 There were no EBS CSI Driver pods.
-Root Cause
-The AWS EBS CSI Driver was not installed.
-Therefore Kubernetes could not dynamically provision the requested EBS volume.
 
-12. EBS CSI IAM Problem
-The first attempt to create the EBS CSI IAM service account failed.
-CloudFormation reported:
+Root cause
 
-Policy arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicyV2
-does not exist or is not attachable.
+The:
 
-We checked the IAM role:
-aws iam get-role \
-  --role-name AmazonEKS_EBS_CSI_DriverRole \
-  --query 'Role.Arn' \
-  --output text
+AWS EBS CSI Driver
 
-The role existed:
-arn:aws:iam::919006484182:role/AmazonEKS_EBS_CSI_DriverRole
+was not installed.
 
-The attached policy was:
+Therefore:
+
+PVC
+ |
+ X
+EBS
+
+could not be created.
+
+12. EBS CSI Driver
+
+The EBS CSI Driver allows Kubernetes to communicate with AWS EBS.
+
+Without it:
+
+Kubernetes
+    |
+    X
+AWS EBS
+
+With it:
+
+Kubernetes
+    |
+    v
+EBS CSI Driver
+    |
+    v
+AWS EBS
+
+You also encountered an IAM policy issue where:
+
+AmazonEBSCSIDriverPolicyV2
+
+was not available/attachable.
+
+You discovered an existing IAM role using:
+
 AmazonEBSCSIDriverPolicy
 
-Verified with:
-aws iam list-attached-role-policies \
-  --role-name AmazonEKS_EBS_CSI_DriverRole
+and used that role for the EBS CSI add-on.
 
-13. Install AWS EBS CSI Driver
-The existing IAM role was supplied to the EKS add-on:
+13. Installing EBS CSI Driver
+
+The EBS CSI add-on was created:
+
 aws eks create-addon \
   --cluster-name ekswithdavid \
   --region ap-south-1 \
   --addon-name aws-ebs-csi-driver \
-  --service-account-role-arn arn:aws:iam::919006484182:role/AmazonEKS_EBS_CSI_DriverRole
+  --service-account-role-arn <role-arn>
 
-The add-on was successfully created.
-Verified with:
+After installation:
 
 kubectl get pods -n kube-system | grep ebs
 
-Result:
-ebs-csi-controller-...   6/6   Running
-ebs-csi-controller-...   6/6   Running
-ebs-csi-node-...         3/3   Running
-ebs-csi-node-...         3/3   Running
+showed:
 
-The CSI driver was also verified:
+ebs-csi-controller    Running
+ebs-csi-node           Running
+
+You also verified:
+
 kubectl get csidrivers
 
-Result included:
+and saw:
+
 ebs.csi.aws.com
 
 14. PVC Became Bound
-After installing the EBS CSI Driver:
+
+After installing the CSI driver:
+
 kubectl get pvc -n people-app
 
-returned:
-NAME        STATUS   VOLUME                                     CAPACITY
-mysql-pvc   Bound    pvc-53f62fed-eb0b-4e14-b210-40166fb94ac2   5Gi
+showed:
 
-This confirmed that AWS EBS dynamic provisioning was working.
-15. MySQL Container Configuration Problem
-The MySQL pod initially entered:
+mysql-pvc   Bound   5Gi
+
+This means:
+
+PVC
+ |
+ v
+AWS EBS Volume
+
+was successfully established.
+
+This is called dynamic provisioning.
+
+15. MySQL Pod Problem
+
+After fixing storage, MySQL encountered another problem:
+
 CreateContainerConfigError
 
-We checked:
+You checked:
+
 kubectl get secret mysql-secret -n people-app
 
-and received:
+and Kubernetes reported:
+
 secrets "mysql-secret" not found
 
-The MySQL Deployment referenced:
+The MySQL Deployment expected:
+
 mysql-secret
 
-Therefore Kubernetes could not inject the required environment variables.
+but the Secret didn't exist.
+
+So Kubernetes couldn't provide the required environment variables.
+
 Solution
-The missing Secret was created/applied.
+
+You created/applied the Secret.
+
 After that:
 
 kubectl get pods -n people-app
 
-returned:
-mysql-...   1/1   Running
+showed:
+
+mysql   1/1   Running
 
 16. Verify MySQL
-MySQL was tested from inside the container:
-kubectl exec -it -n people-app mysql-59f96556c9-pz282 -- \
+
+You then tested MySQL directly inside the container:
+
+kubectl exec -it -n people-app <mysql-pod> -- \
   mysql -uroot -prootpassword \
   -e "USE peopledb; SHOW TABLES;"
 
-Result:
-+--------------------+
-| Tables_in_peopledb |
-+--------------------+
-| people             |
-+--------------------+
+It returned:
 
-This confirmed:
-MySQL was running
-Database existed
-Persistent storage worked
-Initialization SQL executed
-people table existed
-17. Backend Deployment
-Backend image:
+people
+
+This proved several things:
+
+MySQL running          ✓
+Database exists        ✓
+EBS storage working    ✓
+init.sql executed      ✓
+people table exists    ✓
+
+17. Backend
+
+Your backend is:
+
+Node.js
+
+Docker image:
+
 davidtejusvi/people-backend:1.0
 
-Backend port:
+Port:
+
 5001
 
-Backend environment:
+Backend configuration:
+
 PORT=5001
 DB_HOST=mysql
 DB_PORT=3306
 DB_USER=root
-DB_PASSWORD=<Kubernetes Secret>
+DB_PASSWORD=<Secret>
 DB_NAME=peopledb
 
-Backend Service:
-Name: people-backend
+The backend is exposed inside Kubernetes using:
+
+ClusterIP
+
+Service:
+
+people-backend
+
+Port:
+
+5001
+
+18. Why ClusterIP for Backend?
+
+You don't want users directly accessing your backend.
+
+You only need:
+
+Frontend → Backend
+
+So the backend can remain internal.
+
+That's why:
+
+people-backend
 Type: ClusterIP
-Port: 5001
 
-The backend Deployment used:
-resources:
-  requests:
-    cpu: "250m"
-    memory: "256Mi"
-  limits:
-    cpu: "500m"
-    memory: "512Mi"
+is appropriate.
 
-18. Backend Health Check
-The backend provides:
+The backend is accessible from inside the cluster using:
+
+people-backend:5001
+19. Backend Health Check
+
+The backend exposes:
+
 GET /api/health
 
-Testing:
-curl http://localhost:5001/api/health
+which returns:
 
-returned:
 {
   "status": "UP",
   "message": "People API is running"
 }
 
-Backend logs showed:
-Backend running on port 5001
+This is useful because it tells you:
 
-19. Frontend Deployment
-Frontend image:
+Backend container
+       ↓
+Node.js application
+       ↓
+HTTP server
+
+is working.
+
+20. Frontend
+
+The frontend is:
+
+React + Vite
+
+Docker image:
+
 davidtejusvi/people-frontend:1.0
 
-The frontend runs using Nginx on:
-Port 80
+React is built and then served using:
 
-The Kubernetes Service was:
-type: NodePort
+Nginx
 
-The assigned NodePort was:
+Nginx listens on:
+
+80
+
+The Kubernetes Service is:
+
+NodePort
+
+with:
+
 31992
 
-Service output:
-people-frontend   NodePort   80:31992/TCP
+So users can access:
 
-20. Frontend Dockerfile
-The frontend used a multi-stage Docker build:
+http://<NODE-PUBLIC-IP>:31992
+
+21. Why Multi-Stage Docker Build?
+
+The frontend Dockerfile uses:
+
 FROM node:22-alpine AS build
 
-WORKDIR /app
-
-COPY package*.json ./
-
-RUN npm ci
-
-COPY . .
+The React application is built:
 
 RUN npm run build
 
+This creates:
+
+dist/
+
+Then the second image is:
 
 FROM nginx:alpine
 
+and the compiled React files are copied:
+
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 80
+So the final container only needs Nginx and the built static files.
 
-CMD ["nginx", "-g", "daemon off;"]
+Architecture:
 
-The React application was built using Vite and served by Nginx.
-21. Frontend NodePort Problem
-Initially:
-curl http://65.2.10.166:31992/
+Node.js image
+     |
+     | npm build
+     v
+   dist/
+     |
+     v
+Nginx image
+     |
+     v
+Production container
 
-failed.
-We verified the frontend pods:
+22. NodePort Problem
 
-kubectl get pods \
-  -n people-app \
-  -l app=people-frontend \
-  -o wide
+Initially you tested:
 
-All frontend pods were:
+http://65.2.10.166:31992/
+
+and it failed.
+
+You checked the frontend pods:
+
+kubectl get pods -n people-app -l app=people-frontend -o wide
+
+They were:
+
 1/1 Running
 
-We checked Service endpoints:
+Then you checked:
+
 kubectl get endpoints people-frontend -n people-app
 
-The endpoints existed:
-192.168.46.69:80
-192.168.5.33:80
-192.168.56.112:80
+and found healthy endpoints.
 
-This confirmed that the Service had healthy backend endpoints.
-22. Verify NodePort
-One node had the public IP:
+So the application pods themselves were working.
+
+You then tested the actual node public IP:
+
 13.201.4.137
 
-Testing:
+using:
+
 curl -v http://13.201.4.137:31992/
 
-returned:
+and received:
+
 HTTP/1.1 200 OK
-Server: nginx/1.31.4
+Server: nginx
 
-Therefore:
-Frontend pods were healthy
-Kubernetes Service was working
-NodePort was working
-Nginx was serving the React application
-AWS Security Group allowed port 31992
-23. Frontend Could Not Load People
-The browser displayed:
-People Technology Manager
+This confirmed the NodePort path was working.
 
-Add Person
+23. The Most Important Problem — localhost
 
-Name
-Email
-AWS, Kubernetes, React
-Experience
+The frontend loaded, but the browser displayed:
 
 Unable to load people
 
-Browser developer tools showed:
-Request URL:
+The browser was trying:
+
 http://localhost:5001/api/people
 
-Root Cause
-The frontend was configured to call:
+This is a very common Kubernetes mistake.
+
+What does browser localhost mean?
+
+If your browser is running on your laptop:
+
+localhost
+
+means:
+
+YOUR LAPTOP
+
+It does not mean:
+
+Kubernetes Pod
+
+So:
+
+React Browser
+     |
+     | localhost:5001
+     v
+Your laptop
+
+not:
+
+React
+ |
+ v
+Kubernetes Backend
+
+The project documentation identifies this as the main reason the frontend initially could not load people.
+
+24. Finding the Problem
+
+You searched the frontend source:
+
+grep -R "localhost:5001" frontend
+
+and found:
+
+frontend/.env
+VITE_API_URL=http://localhost:5001/api
+
+and:
+
+personApi.js
+
+also contained:
+
 http://localhost:5001/api
 
-The browser's localhost means the user's own computer.
-It does not mean the Kubernetes backend.
+Therefore the React application was built with a local development URL.
 
-24. Find the Incorrect Configuration
-We searched the frontend:
-grep -R "localhost:5001" frontend \
-  --exclude-dir=node_modules \
-  --exclude-dir=.git \
-  --exclude-dir=dist
-
-The result was:
-frontend/.env:VITE_API_URL=http://localhost:5001/api
-
-frontend/src/services/personApi.js:
-import.meta.env.VITE_API_URL || "http://localhost:5001/api";
-
-This confirmed that the React application had been built with a local backend URL.
 25. Correct Solution — Nginx Reverse Proxy
-Instead of exposing the backend directly to the browser, Nginx was configured to proxy /api/ requests to the Kubernetes backend Service.
-Final Nginx configuration:
 
-server {
-    listen 80;
-    server_name _;
+Instead of exposing the backend directly to the browser, you configured Nginx.
 
-    location /api/ {
-        proxy_pass http://people-backend:5001/api/;
-        proxy_http_version 1.1;
+The browser sends:
 
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+/api/people
 
-    location / {
-        root /usr/share/nginx/html;
-        index index.html;
-        try_files $uri $uri/ /index.html;
-    }
-}
+to the frontend.
 
-This changed the architecture to:
-Browser
-   |
-   | /api/people
-   v
-Frontend NodePort
-   |
-   v
-Nginx
-   |
-   | proxy
-   v
+Nginx receives it and forwards it to:
+
 people-backend:5001
-   |
-   v
-MySQL:3306
 
-26. Verify Nginx Configuration
-The configuration was checked inside the frontend pod:
-kubectl exec -n people-app \
-  people-frontend-5d5c876d95-2lb5r \
-  -- cat /etc/nginx/conf.d/default.conf
+The configuration was:
 
-The /api/ proxy was present:
 location /api/ {
     proxy_pass http://people-backend:5001/api/;
+
     proxy_http_version 1.1;
 
     proxy_set_header Host $host;
@@ -562,8 +815,74 @@ location /api/ {
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 
-27. Test API Through Frontend
-The API was tested from inside Kubernetes:
+26. Now the Traffic Flow Is Correct
+
+The final architecture became:
+
+                    Browser
+                       |
+                       | http://NODE-IP:31992
+                       v
+               Frontend NodePort
+                       |
+                       v
+                     Nginx
+                    /     \
+                   /       \
+             /api/*         /
+                |             |
+                v             v
+        people-backend      React
+           :5001
+             |
+             v
+          mysql:3306
+             |
+             v
+          MySQL
+             |
+             v
+          AWS EBS
+
+This is the key architecture you should remember.
+
+27. How Nginx Solves the Problem
+
+Before:
+
+Browser
+   |
+   | localhost:5001
+   X
+
+After:
+
+Browser
+   |
+   | /api/people
+   v
+Nginx
+   |
+   | people-backend:5001
+   v
+Backend
+
+This works because:
+
+people-backend
+
+is a Kubernetes Service.
+
+Kubernetes DNS resolves:
+
+people-backend
+
+to the backend Service.
+
+28. Testing the Complete API
+
+You tested the API from inside Kubernetes:
+
 kubectl run curl-test \
   -n people-app \
   --rm -it \
@@ -571,27 +890,10 @@ kubectl run curl-test \
   --restart=Never \
   -- curl -s http://people-frontend/api/people
 
-The API returned:
-[
-  {
-    "id": 2,
-    "name": "John",
-    "email": "john@test.com",
-    "technologies": "Java, AWS, Docker",
-    "experience": 5,
-    "created_at": "2026-08-22T20:06:35.000Z"
-  },
-  {
-    "id": 1,
-    "name": "David",
-    "email": "david@test.com",
-    "technologies": "AWS, Kubernetes, React",
-    "experience": 8,
-    "created_at": "2026-08-22T20:06:35.000Z"
-  }
-]
+The API returned people data.
 
-This confirmed:
+That proved:
+
 Frontend
    ↓
 Nginx
@@ -600,55 +902,109 @@ Backend
    ↓
 MySQL
 
-was working correctly.
-28. Final Application Flow
-The final browser request was:
-http://<NODE-PUBLIC-IP>:31992/
+was working.
 
-The frontend loaded from Nginx.
-When React requested:
+29. Complete Request Flow
+
+This is the most important flow to understand for an interview.
+
+Suppose the user opens:
+
+http://13.201.4.137:31992
+Step 1 — Browser
+
+Browser requests:
+
+/
+Step 2 — NodePort
+
+Kubernetes NodePort:
+
+31992
+
+receives the request.
+
+Step 3 — Frontend Service
+
+The request reaches the frontend Pod.
+
+Step 4 — Nginx
+
+Nginx serves:
+
+React application
+Step 5 — React
+
+React requests:
 
 /api/people
+Step 6 — Nginx
 
-the request went to:
-Nginx
+Nginx sees:
 
-Nginx proxied it to:
+/api/*
+
+and proxies it to:
+
 people-backend:5001
+Step 7 — Node.js
 
-The backend queried:
+Node.js receives:
+
+GET /api/people
+Step 8 — MySQL
+
+Node.js connects to:
+
 mysql:3306
+Step 9 — Database
 
-MySQL queried the:
+MySQL queries:
+
 people
 
-table stored on the AWS EBS volume.
-The data was returned back through the same path:
+table.
+
+Step 10 — Storage
+
+MySQL data is persisted on:
+
+AWS EBS
+Response
+
+The response travels back:
 
 MySQL
   ↓
-Backend
+Node.js
+  ↓
+Backend Service
   ↓
 Nginx
   ↓
-React
+Frontend
   ↓
 Browser
 
-29. Complete Kubernetes Resource Structure
+This complete flow is documented in the project.
+
+30. Kubernetes Resources
+
+Your application ultimately consisted of:
+
 people-app
 │
 ├── Namespace
 │
-├── people-frontend
+├── Frontend
 │   ├── Deployment
 │   └── NodePort Service
 │
-├── people-backend
+├── Backend
 │   ├── Deployment
 │   └── ClusterIP Service
 │
-├── mysql
+├── MySQL
 │   ├── Deployment
 │   └── ClusterIP Service
 │
@@ -659,223 +1015,181 @@ people-app
 │   └── init.sql
 │
 └── mysql-pvc
-    └── 5Gi AWS EBS volume
+    └── AWS EBS
 
-30. Problems and Solutions
+31. Problems You Solved
+
+This is actually one of the strongest parts of your project because you didn't just deploy it—you debugged multiple real Kubernetes problems.
+
 Problem	Root Cause	Solution
-kubectl get nodes → No resources found	Node group still creating	Waited for node group to become ACTIVE
-mysql-pvc → Pending	EBS CSI Driver unavailable	Installed AWS EBS CSI Driver
-EBS CSI IAM creation failed	Invalid AmazonEBSCSIDriverPolicyV2 policy reference	Used existing EBS CSI IAM role with AmazonEBSCSIDriverPolicy
-MySQL pod → Pending	PVC couldn't provision EBS	Installed EBS CSI Driver
-MySQL pod → CreateContainerConfigError	mysql-secret missing	Created/applied Kubernetes Secret
-MySQL database unavailable	Database had not initialized	Mounted init.sql ConfigMap
-Frontend initially inaccessible through NodePort	Network/security group issue	Verified and allowed NodePort 31992
-Frontend → Unable to load people	Frontend called localhost:5001	Added Nginx reverse proxy
-/api/people returned 404	Nginx had no /api/ route	Added /api/ proxy configuration
-Backend container had no curl	Minimal application image	Tested networking using a temporary curl pod
+Nodes unavailable	Node group still creating	Waited for node group
+PVC Pending	EBS CSI Driver missing	Installed CSI Driver
+EBS IAM problem	Invalid policy reference	Used existing IAM role
+MySQL Pending	Storage unavailable	Fixed EBS CSI
+MySQL ConfigError	Secret missing	Created Secret
+Database initialization issue	init.sql not mounted	ConfigMap
+NodePort access issue	Network/security configuration	Verified NodePort/SG
+Frontend couldn't load people	React called localhost	Nginx reverse proxy
+/api routing issue	No Nginx route	Added /api/ proxy
+Backend lacked curl	Minimal image	Used temporary curl pod
 
-31. Important Kubernetes Debugging Commands
-Nodes
-kubectl get nodes
+32. Kubernetes Debugging Method
 
-All application pods
+One of the biggest lessons from this project is:
+
+Don't randomly change YAML. Find which layer is broken.
+
+Use this sequence:
+
+1. Pod
+   ↓
+2. Service
+   ↓
+3. Endpoints
+   ↓
+4. Network
+   ↓
+5. Storage
+   ↓
+6. Configuration
+   ↓
+7. Application logs
+
+Useful commands:
+
 kubectl get pods -n people-app
-
-Services
+kubectl describe pod -n people-app <pod>
+kubectl logs -n people-app deployment/people-backend
 kubectl get svc -n people-app
-
-PVC
+kubectl get endpoints -n people-app
 kubectl get pvc -n people-app
-
-Pod details
-kubectl describe pod -n people-app <pod-name>
-
-PVC details
 kubectl describe pvc -n people-app mysql-pvc
 
-Backend logs
-kubectl logs -n people-app deployment/people-backend
+These were the primary debugging commands used in the project.
 
-Frontend endpoints
-kubectl get endpoints people-frontend -n people-app
+33. The 5 Most Important Concepts You Learned
+1. Kubernetes Service Discovery
 
-CSI drivers
-kubectl get csidrivers
+Inside Kubernetes:
 
-EBS CSI pods
-kubectl get pods -n kube-system | grep ebs
-
-32. Useful AWS Commands
-List EKS clusters
-aws eks list-clusters --region ap-south-1
-
-List node groups
-aws eks list-nodegroups \
-  --cluster-name ekswithdavid \
-  --region ap-south-1
-
-List EKS add-ons
-aws eks list-addons \
-  --cluster-name ekswithdavid \
-  --region ap-south-1
-
-Check EBS volumes
-aws ec2 describe-volumes \
-  --region ap-south-1
-
-Check CloudFormation
-aws cloudformation list-stacks \
-  --region ap-south-1
-
-33. AWS Cleanup
-After testing the application, the EKS environment was completely removed.
-The cluster was deleted using:
-
-eksctl delete cluster \
-  --name ekswithdavid \
-  --region ap-south-1 \
-  --wait
-
-Verification:
-aws eks list-clusters --region ap-south-1
-
-Result:
-{
-    "clusters": []
-}
-
-The EBS CSI IAM role was also removed.
-Verification:
-
-aws iam get-role \
-  --role-name AmazonEKS_EBS_CSI_DriverRole
-
-Result:
-NoSuchEntity
-
-CloudFormation resources associated with the cluster were confirmed as:
-DELETE_COMPLETE
-
-The leftover 5GiB EBS volume created for MySQL was identified and cleaned up separately.
-Older EBS volumes that were already in use were not deleted.
-
-34. Final Verification
-The final deployment successfully demonstrated:
-                 AWS
-                  |
-                  v
-              Amazon EKS
-                  |
-       +----------+----------+
-       |                     |
-       v                     v
-   Frontend              Backend
-    Nginx                 Node.js
-       |                     |
-       +----------+----------+
-                  |
-                  v
-                MySQL
-                  |
-                  v
-                AWS EBS
-
-The application successfully returned people data from MySQL:
-[
-  {
-    "id": 2,
-    "name": "John",
-    "email": "john@test.com",
-    "technologies": "Java, AWS, Docker",
-    "experience": 5
-  },
-  {
-    "id": 1,
-    "name": "David",
-    "email": "david@test.com",
-    "technologies": "AWS, Kubernetes, React",
-    "experience": 8
-  }
-]
-
-35. Key Lessons Learned
-Kubernetes Service Discovery
-Applications inside Kubernetes should communicate using Service DNS names:
 people-backend:5001
 mysql:3306
 
-rather than using localhost.
-Browser localhost
-A browser request to:
-http://localhost:5001
+are used instead of hard-coded Pod IP addresses.
+
+2. localhost Is Different
+
+Inside a browser:
+
+localhost
 
 means:
-The user's own computer
 
-It does not mean:
-Kubernetes backend
+user's own computer
 
-This was the main reason the frontend initially displayed:
-Unable to load people
+It does not mean your Kubernetes backend.
 
-EBS CSI Driver
-AWS EBS dynamic provisioning requires the EBS CSI Driver:
+3. EBS CSI Driver
+
+For dynamic EBS provisioning:
+
 PVC
- |
- v
+ ↓
 StorageClass
- |
- v
+ ↓
 EBS CSI Driver
- |
- v
+ ↓
 AWS EBS
 
-Without the CSI driver, the PVC remained:
-Pending
+Without the CSI driver:
 
-Kubernetes Secrets
-Database credentials should be provided through Kubernetes Secrets rather than directly exposing them in the Deployment.
-Debugging Kubernetes
-The most useful commands during troubleshooting were:
-kubectl get pods
-kubectl describe pod
-kubectl get pvc
-kubectl describe pvc
-kubectl get svc
-kubectl get endpoints
+PVC = Pending
+
+4. Kubernetes Secrets
+
+Passwords should be supplied through:
+
+Secret
+
+rather than directly exposing them in application configuration.
+
+5. Layer-by-Layer Debugging
+
+When something fails:
+
+kubectl get
+        ↓
+kubectl describe
+        ↓
 kubectl logs
+        ↓
+check Service
+        ↓
+check Endpoints
+        ↓
+check network
 
-These commands made it possible to identify the problem layer-by-layer.
-36. Final Result
-The People Technology Manager application was successfully deployed and tested on Amazon EKS.
-The final working stack consisted of:
+This approach helped you identify each issue instead of guessing.
 
-React
+34. Final Architecture to Remember
+
+If an interviewer asks:
+
+"Explain your People Technology Manager project."
+
+You can explain it like this:
+
+I built and deployed a full-stack People Technology Manager
+application on Amazon EKS.
+
+The application consists of a React frontend, Node.js backend,
+and MySQL database.
+
+The React frontend is built using Vite and served through Nginx.
+The frontend is exposed externally using a Kubernetes NodePort.
+
+The Node.js backend is exposed internally using a ClusterIP
+Service, and the frontend communicates with it through an Nginx
+reverse proxy.
+
+The backend communicates with MySQL using Kubernetes Service
+Discovery through the mysql:3306 DNS name.
+
+For database persistence, I created a 5Gi PersistentVolumeClaim.
+The PVC dynamically provisions an AWS EBS volume through the
+AWS EBS CSI Driver.
+
+Database credentials are stored in a Kubernetes Secret, while
+the MySQL initialization script is provided through a ConfigMap.
+
+During deployment, I troubleshot several real Kubernetes issues,
+including a Pending PVC caused by the missing EBS CSI Driver,
+a MySQL CreateContainerConfigError caused by a missing Secret,
+and a frontend API failure caused by localhost being used from
+the browser.
+
+I solved the frontend API issue using an Nginx reverse proxy.
+
+The final flow is:
+
+Browser
+  ↓
+NodePort
   ↓
 Nginx
   ↓
-Kubernetes NodePort
-  ↓
-people-backend Service
+React / API Proxy
   ↓
 Node.js Backend
   ↓
-MySQL Service
-  ↓
 MySQL
   ↓
-Kubernetes PVC
+PVC
   ↓
 AWS EBS
 
-The application successfully:
-Served the React frontend
-Exposed the frontend through NodePort
-Routed /api/* through Nginx
-Connected the backend to MySQL
-Initialized the database
-Persisted MySQL data using AWS EBS
-Returned people data through the REST API
-Displayed the data in the browser
-After testing, the AWS EKS environment was cleaned up successfully.
+The project successfully demonstrated the complete application path from React through Nginx, Kubernetes Services, Node.js, MySQL, PVC, and AWS EBS.
+
+The one-line architecture
+
+Internet → EKS NodePort → Nginx/React → Backend Service → Node.js → MySQL Service → PVC → AWS EBS
